@@ -19,7 +19,7 @@ fi
 function config() {
     LOGDIR=/var/log/noip-renew/$USER
     INSTDIR=/usr/local/bin
-    INSTEXE=$INSTDIR/noip-renew-$USER.sh
+    INSTEXE=$INSTDIR/noip-renew-$USER
     CRONJOB="0 1    * * *   $USER    $INSTEXE $LOGDIR"
 }
 
@@ -88,6 +88,10 @@ function deploy() {
     $SUDO chown $USER $INSTDIR/noip-renew-skd.sh
     $SUDO chmod 700 $INSTEXE
     noip
+    if [ "${notify^^}" = "Y" ]
+    then
+      notificationSetup "$notification" # This calls notification setup with the selected notification type.
+    fi
     $SUDO crontab -u $USER -l | grep -v '/noip-renew*'  | $SUDO crontab -u $USER -
     ($SUDO crontab -u $USER -l; echo "$CRONJOB") | $SUDO crontab -u $USER -
     $SUDO sed -i 's/USER=/USER='$USER'/1' $INSTDIR/noip-renew-skd.sh
@@ -123,9 +127,100 @@ function uninstall() {
       $SUDO rm -rf $LOGDIR
     fi
 }
+function notificationInstall() {
+    PS3='Select an option: '
+    options=("Discord Notifications" "Pushover Notifications" "Slack Notifications" "Telegram Notifications" "None")
+    select opt in "${options[@]}"
+    do
+        case $opt in
+            "Discord Notifications")
+                notification="Discord"
+                $SUDO $PYTHON -m pip install discord-webhook
+                echo "Discord requirements installed..."
+                break
+                ;;
+            "Pushover Notifications")
+                notification="Pushover"
+                $SUDO $PYTHON -m pip install requests
+                echo "Pushover requirements installed..."
+                break
+                ;;
+            "Slack Notifications")
+                notification="Slack"
+                $SUDO $PYTHON -m pip install slackclient
+                echo "Slack requirements installed..."
+                break
+                ;;
+            "Telegram Notifications")
+                notification="Telegram"
+                $SUDO $PYTHON -m pip install telegram-send
+                echo "Telegram requirements installed..."
+                break
+                ;;
+            "None")
+                notify="N"
+                break
+                ;;
+            *) echo "invalid option $REPLY";;
+        esac
+    done
+}
+
+function notificationSetup() {
+    $SUDO sed -i 's/NOTIFICATION=".*"/NOTIFICATION="'$1'"/1' $INSTEXE
+
+    case $1 in
+        "Discord") discord;;
+        "Pushover") pushover;;
+        "Slack") slack;;
+        "Telegram") telegram;;
+    esac
+}
+
+function discord() {
+    echo "Enter the URL of your Discord webhook..."
+    read -p 'Webhook: ' webhook
+
+    $SUDO sed -i 's/DISCORD_WEBHOOK=".*"/DISCORD_WEBHOOK="'$webhook'"/1' $INSTEXE
+}
+
+function pushover() {
+    echo "Enter your Pushover Token..."
+    read -p 'Token: ' tokenvar
+
+    tokenvar=`echo -n $tokenvar | base64`
+
+    $SUDO sed -i 's/PUSHOVER_TOKEN=".*"/PUSHOVER_TOKEN="'$tokenvar'"/1' $INSTEXE
+
+    echo "Enter your Pushover User Key..."
+    read -p 'User: ' uservar
+
+    uservar=`echo -n $uservar | base64`
+
+    $SUDO sed -i 's/PUSHOVER_USER_KEY=".*"/PUSHOVER_USER_KEY="'$uservar'"/1' $INSTEXE
+}
+
+function slack() {
+    echo "Enter your Slack Bot User OAuth Access Token..."
+    read -p 'Token: ' tokenvar
+
+    tokenvar=`echo -n $tokenvar | base64`
+
+    $SUDO sed -i 's/SLACK_TOKEN=".*"/SLACK_TOKEN="'$tokenvar'"/1' $INSTEXE
+
+    echo "Enter the channel you wish to receive notifications on..."
+    read -p 'Channel: ' channel
+
+    $SUDO sed -i 's/CHANNEL=".*"/CHANNEL="'$channel'"/1' $INSTEXE
+}
+
+function telegram() {
+    echo "Please configure Telegram:"
+    $SUDO telegram-send --configure
+}
 
 PS3='Select an option: '
-options=("Install/Repair Script" "Update noip.com account details" "Uninstall Script" "Exit setup.sh")
+options=("Install/Repair Script" "Update noip.com account details" "Uninstall Script" "Install notification" "Exit setup.sh")
 echo "No-IP Auto Renewal Script Setup."
 select opt in "${options[@]}"
 do
@@ -150,6 +245,10 @@ do
             fi
             break
             ;;
+	"Install notification")
+	    notificationInstall
+	    break
+	    ;;
         "Exit setup.sh")
             break
             ;;

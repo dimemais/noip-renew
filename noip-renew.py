@@ -24,6 +24,27 @@ import re
 import base64
 import subprocess
 
+try:
+    from discord_webhook import DiscordWebhook, DiscordEmbed
+except ImportError:
+    pass
+
+try:
+    import requests
+except ImportError:
+    pass
+
+try:
+    from slack import WebClient
+    from slack.errors import SlackApiError
+except ImportError:
+    pass
+
+try:
+    import telegram_send
+except ImportError:
+    pass
+
 class Logger:
     def __init__(self, level):
         self.level = 0 if level is None else level
@@ -35,18 +56,95 @@ class Logger:
             print(f"[{self.time_string_formatter}] - {msg}")
 
 
+class Notify:
+
+    APP_TOKEN = ""
+    USER_KEY = ""
+    SLACK_TOKEN = ""
+    CHANNEL = ""
+    WEBHOOK_URL = ""
+
+    def __init__(self, notification_type):
+        self.notification_type = notification_type
+        self.setup(self.notification_type)
+
+    def setup(self, notification_type):
+        return { "Discord": self.setupDiscord, "Pushover": self.setupPushover, "Slack": self.setupSlack }.get(self.notification_type.split('|')[0], lambda : 'Invalid')()
+
+    def setupDiscord(self):
+        self.WEBHOOK_URL = self.notification_type.split('|')[1]
+
+    def setupPushover(self):
+        self.APP_TOKEN = base64.b64decode(self.notification_type.split('|')[1]).decode('utf-8')
+        self.USER_KEY = base64.b64decode(self.notification_type.split('|')[2]).decode('utf-8')
+
+    def setupSlack(self):
+        self.SLACK_TOKEN = base64.b64decode(self.notification_type.split('|')[1]).decode('utf-8')
+        self.CHANNEL = self.notification_type.split('|')[2]
+
+    def pushover(self, msg, img):
+        r = requests.post("https://api.pushover.net/1/messages.json", data = {
+          "token": self.APP_TOKEN,
+          "user": self.USER_KEY,
+          "message": msg
+        },
+        files = {
+          "attachment": ("image.png", open(img, "rb"), "image/png")
+        })
+        del r
+
+    def discord(self, msg, img):
+        webhook = DiscordWebhook(url=self.WEBHOOK_URL, content=msg)
+        with open(img, "rb") as f:
+            webhook.add_file(file=f.read(), filename=img)
+
+    def slack(self, msg, img):
+        client = WebClient(token=self.SLACK_TOKEN)
+        try:
+            client.chat_postMessage(
+                channel=self.CHANNEL,
+                text=msg
+            )
+            client.files_upload(
+                channels=self.CHANNEL,
+                file=img,
+                title=img,
+            )
+        except SlackApiError as e:
+            assert e.response["error"]
+
+    def telegram(self, msg, img):
+        with open(img, "rb") as f:
+            telegram_send.send(captions=[msg], images=[f])
+
+    def send(self, message, image):
+        if self.notification_type.split('|')[0] == "Discord":
+            self.discord(message, image)
+        elif self.notification_type.split('|')[0] == "Pushover":
+            self.pushover(message, image)
+        elif self.notification_type.split('|')[0] == "Slack":
+            self.slack(message, image)
+        elif self.notification_type.split('|')[0] == "Telegram":
+            self.telegram(message, image)
+        elif self.notification_type.split('|')[0] == "None":
+            return
+        else:
+            raise Exception("Something went wrong with notifications. Try to reinstall the script.")
+
+
 class Robot:
 
     USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.14; rv:64.0) Gecko/20100101 Firefox/64.0"
     LOGIN_URL = "https://www.noip.com/login"
     HOST_URL = "https://my.noip.com/#!/dynamic-dns"
 
-    def __init__(self, username, password, debug):
+    def __init__(self, username, password, notification_type, debug):
         self.debug = debug
         self.username = username
         self.password = password
         self.browser = self.init_browser()
         self.logger = Logger(debug)
+        self.notification = Notify(notification_type)
 
     @staticmethod
     def init_browser():
@@ -105,6 +203,7 @@ class Robot:
         today = date.today() + timedelta(days=nr)
         day = str(today.day)
         month = str(today.month)
+        self.notification.send(f"No-IP Renew ran successfully. The next host update is in {str(nr)} days", "results.png")
         subprocess.call(['/usr/local/bin/noip-renew-skd.sh', day, month, "True"])
         return True
 
@@ -115,6 +214,7 @@ class Robot:
         except TimeoutException as e:
             self.browser.save_screenshot("timeout.png")
             self.logger.log(f"Timeout: {str(e)}")
+            self.notification.send(f"Timeout: {str(e)}", "timeout.png")
 
     def update_host(self, host_button, host_name):
         self.logger.log(f"Updating {host_name}")
@@ -131,6 +231,7 @@ class Robot:
             raise Exception("Manual intervention required. Upgrade text detected.")
 
         self.browser.save_screenshot(f"{host_name}_success.png")
+        self.notification.send(f"{host_name} updated successfully", f"{host_name}_success.png")
 
     @staticmethod
     def get_host_expiration_days(host, iteration):
@@ -169,6 +270,7 @@ class Robot:
         except Exception as e:
             self.logger.log(str(e))
             self.browser.save_screenshot("exception.png")
+            self.notification.send(f"An error has occured: {str(e)}", "exception.png")
             subprocess.call(['/usr/local/bin/noip-renew-skd.sh', "*", "*", "False"])
             rc = 2
         finally:
@@ -177,23 +279,24 @@ class Robot:
 
 
 def main(argv=None):
-    noip_username, noip_password, debug,  = get_args_values(argv)
-    return (Robot(noip_username, noip_password, debug)).run()
+    noip_username, noip_password, notification_type, debug,  = get_args_values(argv)
+    return (Robot(noip_username, noip_password, notification_type, debug)).run()
 
 
 def get_args_values(argv):
     if argv is None:
         argv = sys.argv
-    if len(argv) < 3:
-        print(f"Usage: {argv[0]} <noip_username> <noip_password> [<debug-level>] ")
+    if len(argv) < 4:
+        print(f"Usage: {argv[0]} <noip_username> <noip_password> <notification_type> [<debug-level>]")
         sys.exit(1)
 
     noip_username = argv[1]
     noip_password = argv[2]
+    notification_type = argv[3]
     debug = 1
-    if len(argv) > 3:
-        debug = int(argv[3])
-    return noip_username, noip_password, debug
+    if len(argv) > 4:
+        debug = int(argv[4])
+    return noip_username, noip_password, notification_type, debug
 
 
 if __name__ == "__main__":
