@@ -46,8 +46,6 @@ Check [noip.com documentation](https://www.noip.com/integrate) for that purpose.
 Most wireless routers support noip.com. For more information, check [here](https://www.noip.com/support/knowledgebase/what-devices-support-no-ips-dynamic-dns-update-service/).
 You can also check [DNS-O-Matic](https://dnsomatic.com/) to update multiple noip.com DNS records.
 
-If you need notification functionality, please try [IDemixI's branch](https://github.com/IDemixI/noip-renew/tree/notifications).
-
 ## Notification Setup
 
 <details><summary><strong>Discord:</strong></summary>
