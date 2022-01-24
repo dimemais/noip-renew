@@ -15,6 +15,10 @@
 
 from selenium import webdriver
 from selenium.common.exceptions import TimeoutException
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 from datetime import date
 from datetime import timedelta
 import time
@@ -136,7 +140,7 @@ class Robot:
 
     USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.14; rv:64.0) Gecko/20100101 Firefox/64.0"
     LOGIN_URL = "https://www.noip.com/login"
-    HOST_URL = "https://my.noip.com/#!/dynamic-dns"
+    HOST_URL = "https://my.noip.com/dynamic-dns"
 
     def __init__(self, username, password, notification_type, debug):
         self.debug = debug
@@ -155,6 +159,7 @@ class Robot:
         options.add_argument("no-sandbox")  # need when run in docker
         options.add_argument("window-size=1200x800")
         options.add_argument(f"user-agent={Robot.USER_AGENT}")
+        options.add_argument("disable-gpu")
         if 'https_proxy' in os.environ:
             options.add_argument("proxy-server=" + os.environ['https_proxy'])
         browser = webdriver.Chrome(options=options)
@@ -164,24 +169,43 @@ class Robot:
     def login(self):
         self.logger.log(f"Opening {Robot.LOGIN_URL}...")
         self.browser.get(Robot.LOGIN_URL)
+        
+        try:
+            elem = WebDriverWait(self.browser, 10).until( EC.presence_of_element_located((By.ID, "content")))
+        except:
+            raise Exception("Login page could not be loaded")
+            
         if self.debug > 1:
             self.browser.save_screenshot("debug1.png")
 
         self.logger.log("Logging in...")
-        ele_usr = self.browser.find_element_by_name("username")
-        ele_pwd = self.browser.find_element_by_name("password")
+#        ele_usr = self.browser.find_element(By.XPATH, "//form[@id='clogs']/input[@name='username']")
+#        ele_pwd = self.browser.find_element(By.XPATH, "//form[@id='clogs']/input[@name='password']")
+        
+        ele_usr = elem.find_element(By.NAME, "username")
+        ele_pwd = elem.find_element(By.NAME, "password")
+        
         ele_usr.send_keys(self.username)
         ele_pwd.send_keys(base64.b64decode(self.password).decode('utf-8'))
-        self.browser.find_element_by_name("Login").click()
+        ele_pwd.send_keys(Keys.ENTER)
+        
+        # After Loggin browser loads my.noip.com page - give him some time to load
+        # 'noip-cart' element is near the end of html, so html have been loaded
+        try:
+            elem = WebDriverWait(self.browser, 10).until( EC.presence_of_element_located((By.ID, "noip-cart")))
+        except:
+            raise Exception("my.noip.com page could not load")        
+
         if self.debug > 1:
-            time.sleep(1)
+#            time.sleep(1)
             self.browser.save_screenshot("debug2.png")
 
     def update_hosts(self):
         count = 0
 
         self.open_hosts_page()
-        time.sleep(1)
+        self.browser.implicitly_wait(1)
+#        time.sleep(1)
         iteration = 1
         next_renewal = []
 
@@ -191,11 +215,17 @@ class Robot:
             host_button = self.get_host_button(host, iteration) # This is the button to confirm our free host
             host_name = host_link.text
             expiration_days = self.get_host_expiration_days(host, iteration)
-            next_renewal.append(expiration_days)
-            self.logger.log(f"{host_name} expires in {str(expiration_days)} days")
-            if expiration_days < 7:
+#            next_renewal.append(expiration_days)
+#            self.logger.log(f"{host_name} expires in {str(expiration_days)} days")
+            if expiration_days <= 7:
                 self.update_host(host_button, host_name)
+                expiration_days = self.get_host_expiration_days(host, iteration)
+                next_renewal.append(expiration_days)
+                self.logger.log(f"{host_name} expires in {str(expiration_days)} days")
                 count += 1
+            else:
+                next_renewal.append(expiration_days)
+                self.logger.log(f"{host_name} expires in {str(expiration_days)} days")
             iteration += 1
         self.browser.save_screenshot("results.png")
         self.logger.log(f"Confirmed hosts: {count}", 2)
@@ -204,7 +234,10 @@ class Robot:
         day = str(today.day)
         month = str(today.month)
         self.notification.send(f"No-IP Renew ran successfully. The next host update is in {str(nr)} days", "results.png")
-        subprocess.call(['/usr/local/bin/noip-renew-skd.sh', day, month, "True"])
+        try:
+            subprocess.call(['/usr/local/bin/noip-renew-skd.sh', day, month, "True"])
+        except (FileNotFoundError,PermissionError):
+            self.logger.log(f"noip-renew-skd.sh missing or not executable, skipping crontab configuration")
         return True
 
     def open_hosts_page(self):
@@ -219,10 +252,11 @@ class Robot:
     def update_host(self, host_button, host_name):
         self.logger.log(f"Updating {host_name}")
         host_button.click()
-        time.sleep(3)
+        self.browser.implicitly_wait(3)
+#        time.sleep(3)
         intervention = False
         try:
-            if self.browser.find_elements_by_xpath("//h2[@class='big']")[0].text == "Upgrade Now":
+            if self.browser.find_elements(By.XPATH, "//h2[@class='big']")[0].text == "Upgrade Now":
                 intervention = True
         except:
             pass
@@ -236,11 +270,13 @@ class Robot:
     @staticmethod
     def get_host_expiration_days(host, iteration):
         try:
-            host_remaining_days = host.find_element_by_xpath(".//a[@class='no-link-style']").text
+            host_remaining_days = host.find_element(By.XPATH, ".//a[contains(@class,'no-link-style')]")
         except:
-            host_remaining_days = "Expires in 0 days"
-            pass
-        regex_match = re.search("\\d+", host_remaining_days)
+            return 0
+        if host_remaining_days.get_attribute("data-original-title") is not None:
+            regex_match = re.search("\\d+", host_remaining_days.get_attribute("data-original-title"))
+        else:
+            regex_match = re.search("\\d+", host_remaining_days.text)
         if regex_match is None:
             raise Exception("Expiration days label does not match the expected pattern in iteration: {iteration}")
         expiration_days = int(regex_match.group(0))
@@ -248,14 +284,14 @@ class Robot:
 
     @staticmethod
     def get_host_link(host, iteration):
-        return host.find_element_by_xpath(".//a[@class='link-info cursor-pointer']")
+        return host.find_element(By.XPATH, ".//a[@class='link-info cursor-pointer']")
 
     @staticmethod
     def get_host_button(host, iteration):
-        return host.find_element_by_xpath(".//following-sibling::td[4]/button[contains(@class, 'btn')]")
+        return host.find_element(By.XPATH, ".//following-sibling::td[4]/button[contains(@class, 'btn')]")
 
     def get_hosts(self):
-        host_tds = self.browser.find_elements_by_xpath("//td[@data-title=\"Host\"]")
+        host_tds = self.browser.find_elements(By.XPATH, "//td[@data-title=\"Host\"]")
         if len(host_tds) == 0:
             raise Exception("No hosts or host table rows not found")
         return host_tds
@@ -271,7 +307,10 @@ class Robot:
             self.logger.log(str(e))
             self.browser.save_screenshot("exception.png")
             self.notification.send(f"An error has occured: {str(e)}", "exception.png")
-            subprocess.call(['/usr/local/bin/noip-renew-skd.sh', "*", "*", "False"])
+            try:
+                subprocess.call(['/usr/local/bin/noip-renew-skd.sh', "*", "*", "False"])
+            except (FileNotFoundError,PermissionError):
+                self.logger.log(f"noip-renew-skd.sh missing or not executable, skipping crontab configuration")
             rc = 2
         finally:
             self.browser.quit()
@@ -287,7 +326,7 @@ def get_args_values(argv):
     if argv is None:
         argv = sys.argv
     if len(argv) < 4:
-        print(f"Usage: {argv[0]} <noip_username> <noip_password> <notification_type> [<debug-level>]")
+        print(f"Usage: {argv[0]} <noip_username> <noip_password> <notification_type> [<debug-level>] ")
         sys.exit(1)
 
     noip_username = argv[1]
