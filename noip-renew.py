@@ -318,8 +318,8 @@ class Robot:
 
 
 def main(argv=None):
-    noip_username, noip_password, notification_type, debug,  = get_args_values(argv)
-    return (Robot(noip_username, noip_password, notification_type, debug)).run()
+    noip_username, noip_password, debug  = get_args_values(argv)
+    return (Robot(noip_username, noip_password, debug)).run()
 
 
 def get_args_values(argv):
